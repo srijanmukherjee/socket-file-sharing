@@ -1,3 +1,7 @@
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
+   #error "Compiler not supported"
+#endif
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -6,15 +10,20 @@
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
-#include <sys/time.h>
 #include <libgen.h>
 #include <sys/fcntl.h>
-#include <sys/sendfile.h>
+
+#if defined(__linux__) || defined(__unix__) || defined(_POSIX_VERSION)
+    #include <sys/sendfile.h>
+#endif
 
 #include "../argp-standalone/include/argp-standalone/argp.h"
 #include "server.h"
@@ -176,7 +185,24 @@ void send_file(const char* destination, char* filepath, int port) {
     off_t offset = 0;
     printf("\e[?25l"); // hide the cursor
     while (offset < sb.st_size) {
-        sendfile64(sockfd, fileno(fp), &offset, BUFFER_SIZE);
+
+#if __APPLE__
+    #if __TARGET_OS_MAC
+        off_t len = BUFFER_SIZE;
+        if (sendfile(sockfd, fileno(fp), offset, &len, NULL, 0) < 0) {
+            perror("sendfile() failed");
+            exit(2);
+        }
+
+        offset += len;
+    #else
+        #error "Your platform is not supported"
+    #endif
+#elif defined(__linux__) || defined(__unix__) || defined(_POSIX_VERSION)
+    sendfile64(sockfd, fileno(fp), &offset, BUFFER_SIZE);
+#else
+    #error "Your platform is not supported"
+#endif
         printf("\rprogress: %4.1f%%\r",  
                 (float) offset * 100.0 / sb.st_size);
     }
