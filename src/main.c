@@ -34,8 +34,19 @@ int handle_request(Socket client);
 void send_file(const char* destination, char* filepath, int port);
 void receive_file(int port);
 
+void cleanup_and_exit(int _) {
+    exit(SIGINT);
+}
+
+void cleanup(void) {
+    printf(ENABLE_CURSOR);
+}
+
 int main(int argc, char *argv[]) 
 {
+    signal(SIGINT, cleanup_and_exit);
+    atexit(cleanup);
+    
     // parse command line arguments
     struct arguments arguments;
     memset(&arguments, 0, sizeof(arguments));
@@ -125,7 +136,11 @@ void send_file(const char* destination, char* filepath, int port) {
         #error "Your platform is not supported"
     #endif
 #elif defined(__linux__) || defined(__unix__) || defined(_POSIX_VERSION)
-    sendfile64(sockfd, fileno(fp), &offset, BUFFER_SIZE);
+    if (sendfile64(sockfd, fileno(fp), &offset, BUFFER_SIZE) < 0) {
+        perror("sendfile() failed");
+        fclose(fp);
+        exit(2);
+    }
 #else
     #error "Your platform is not supported"
 #endif
@@ -169,18 +184,31 @@ int handle_request(Socket client) {
 
         // remove the last newline
         endptr[strlen(endptr) - 1] = '\0';
+        printf("main.c:172\n");
 
-        printf("receiving %s (%ld bytes) from %s\n", endptr, filesize, inet_ntoa(client.addr.sin_addr));
+        // ask user if the user wants to accept this file
+        printf("%s is sending %s [%ld bytes], accept? (Y/n) ", inet_ntoa(client.addr.sin_addr), endptr, filesize);
+        char *yes_no = fgets(buf, 10, stdin);
+        if (strcmp("n\n", yes_no) == 0 || strcmp("N\n", yes_no) == 0) {
+            free(str);
+            buf[0] = 0;
+            send(client.fd, buf, 1, 0);
+            printf(ENABLE_CURSOR);
+            return 1;
+        }
+
+        printf("Receiving %s [%ld bytes] from %s\n", endptr, filesize, inet_ntoa(client.addr.sin_addr));
 
         // open and allocate disk space for incoming file
         fp = fopen(endptr, "w+");
         if (fallocate(fileno(fp), 0, 0, filesize) < 0) {
             perror("failed to allocate space for file");
-            break;
+            printf(ENABLE_CURSOR);
+            fclose(fp);
+            return 1;
         }
 
         // send ACK: ready to start receiving byte stream
-        memset(buf, 0, sizeof(buf));
         buf[0] = 1;
         send(client.fd, buf, 1, 0);
 
@@ -223,5 +251,5 @@ int handle_request(Socket client) {
         fp = NULL;
     }
 
-    return nread <= 0;
+    return 1;
 }
