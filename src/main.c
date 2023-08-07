@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
-// #include <libgen.h>
 
 #if defined(__linux__) || defined(__unix__) || defined(_POSIX_VERSION)
     #include <sys/sendfile.h>
