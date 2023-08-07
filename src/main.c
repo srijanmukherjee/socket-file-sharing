@@ -7,17 +7,16 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <stdint.h>
-#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
-#include <argp.h>
 #include <sys/time.h>
 #include <libgen.h>
 #include <sys/fcntl.h>
 #include <sys/sendfile.h>
 
+#include "../argp-standalone/include/argp-standalone/argp.h"
 #include "server.h"
 
 #define BUFFER_SIZE 96 * 1024

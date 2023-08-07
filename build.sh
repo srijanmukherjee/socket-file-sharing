@@ -1,10 +1,11 @@
 #!/bin/bash
 
 CC=clang
-CFLAGS="-Wall"
+CFLAGS="-Wall -I./argp-standalone/include -L./arg-standalone/build/src"
 OUT_DIR=bin
 SRC_DIR=src
 NAME=share
+ARGP_DIR="argp-standalone"
 
 if [[ "$1" == "prod" ]]; then
     echo "production build"
@@ -16,6 +17,13 @@ fi
 if [ ! -d "$OUT_DIR" ]; then
     (set -x; mkdir "$OUT_DIR")
 fi
+
+if [ ! -d "$ARGP_DIR/build" ]; then
+    (set -x; mkdir "$ARGP_DIR/build")
+fi
+
+(set -xe; cd "$ARGP_DIR/build" && cmake -DCMAKE_BUILD_TYPE=Release ..)
+(set -xe; cd "$ARGP_DIR/build" && make)
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "src director ($SRC_DIR) not found"
