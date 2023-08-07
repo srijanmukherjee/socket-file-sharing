@@ -8,141 +8,72 @@
 #include <stdlib.h>
 
 #include <arpa/inet.h>
-#include <sys/ioctl.h>
+#include <sys/fcntl.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <sys/uio.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
-#include <libgen.h>
-#include <sys/fcntl.h>
+// #include <libgen.h>
 
 #if defined(__linux__) || defined(__unix__) || defined(_POSIX_VERSION)
     #include <sys/sendfile.h>
 #endif
 
-#include "../argp-standalone/include/argp-standalone/argp.h"
 #include "server.h"
+#include "argsettings.h"
+#include "constants.h"
 
-#define BUFFER_SIZE 96 * 1024
-#define DEFAULT_PORT 80
+#define DISABLE_CURSOR "\e[?25l"
+#define ENABLE_CURSOR  "\e[?25h"
 
 int handle_request(Socket client);
 void send_file(const char* destination, char* filepath, int port);
 void receive_file(int port);
 
-const char* program_version = "share 1.0";
-const char* program_bug_address = "<emailofsrijan@gmail.com>";
-
-struct arguments {
-    char *args[3];
-    int verbose;
-    int port;
-};
-
-// Order of fields: {NAME, KEY, ARG, FLAGS, DOC}
-static struct argp_option options[] = {
-    {"verbose", 'v', 0, OPTION_ARG_OPTIONAL, "Enable verbose output"},
-    {"port", 'p', "PORTNO", OPTION_ARG_OPTIONAL, "Set socket port"},
-    {0}    
-};
-
-static error_t parse_opt(int key, char* arg, struct argp_state* state) {
-    struct arguments* arguments = state->input;
-
-    switch(key) {
-        case 'v':
-            arguments->verbose = 1;
-            break;
-        case 'p': {
-            if (arg[0] == '=') arg++;
-            
-            arguments->port = strtol(arg, NULL, 10);
-            if (arguments->port <= 0) {
-                fprintf(stderr, "[WARN] falling back to default port (%d)\n", DEFAULT_PORT);
-                arguments->port = DEFAULT_PORT;
-            }
-            break;
-        }
-        case ARGP_KEY_ARG: {
-            // first argument must be recv or send
-            if (state->arg_num == 0 && ! (strcmp(arg, "recv") == 0 || strcmp(arg, "send") == 0))
-                argp_usage(state);
-            
-            if (state->arg_num > 0) {
-                int mode = arguments->args[0][0] == 'r';
-                
-                // mode=1 recv
-                // mode=0 send <ip> <file>
-                int num_args = mode == 1 ? 1 : 3;
-                if (state->arg_num >= num_args)
-                    argp_usage(state);    
-            }
-
-            arguments->args[state->arg_num] = arg;
-            break;
-        }
-        case ARGP_KEY_END: {
-            if (state->arg_num == 0)
-                argp_usage(state);
-            
-            int num_args = arguments->args[0][0] == 'r' ? 1 : 3;
-            if (state->arg_num < num_args)
-                argp_usage(state);
-            
-            break;
-        }
-        default:
-            return ARGP_ERR_UNKNOWN;
-    }
-
-    return 0;
-}
-
-static char arg_doc[] = "ARG1 [ARG2 ARG3]";
-
-static char doc[] = "share -- A program to share file between linux computers.";
-
-static struct argp argp = { options, parse_opt, arg_doc, doc };
-
 int main(int argc, char *argv[]) 
 {
+    // parse command line arguments
     struct arguments arguments;
     memset(&arguments, 0, sizeof(arguments));
     arguments.port = DEFAULT_PORT;
     argp_parse(&argp, argc, argv, 0, 0, &arguments);
 
-    if (strcmp("recv", arguments.args[0]) == 0) receive_file(arguments.port);
-    else send_file(arguments.args[1], arguments.args[2], arguments.port);
+    if (strcmp("recv", arguments.args[0]) == 0) 
+        receive_file(arguments.port);
+    else 
+        send_file(arguments.args[1], arguments.args[2], arguments.port);
 }
 
 void send_file(const char* destination, char* filepath, int port) {
-    printf("sending %s to %s\n", filepath, destination);
     struct sockaddr_in servaddr;
-    int sockfd;
-    socklen_t addrlen = sizeof(servaddr);
+    socklen_t addrlen;
     struct stat sb;
+    off_t offset;
+    int sockfd;
+    FILE* fp;
+    
+    addrlen = sizeof(servaddr);
+
+    printf("sending %s to %s\n", filepath, destination);
 
     if (stat(filepath, &sb) < 0) {
         perror("stat() failed");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
-       int fallocate(int fd, int mode, off_t offset, off_t len);
-
 
     if ((sb.st_mode & __S_IFMT) != __S_IFREG) {
         fprintf(stderr, "file not supported\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
-
 
     if ((sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
         perror("socket() failed");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     memset(&servaddr, 0, sizeof(servaddr));
@@ -152,7 +83,7 @@ void send_file(const char* destination, char* filepath, int port) {
 
     if (connect(sockfd, (struct sockaddr*) &servaddr, addrlen) < 0) {
         perror("connect() failed");
-        exit(1);
+        exit(EXIT_FAILURE);
     }    
 
     char buffer[BUFFER_SIZE];
@@ -162,28 +93,24 @@ void send_file(const char* destination, char* filepath, int port) {
     
     if (send(sockfd, buffer, strlen(buffer), 0) < 0) {
         perror("send() failed");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (recv(sockfd, buffer, sizeof(buffer), 0) <= 0) {
         perror("receiver rejected");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (buffer[0] != 1) {
-        fprintf(stderr, "Receiver rejected\n");
-        exit(1);
+        fprintf(stderr, "receiver rejected\n");
+        exit(EXIT_FAILURE);
     }
 
-    FILE* fp = fopen(filepath, "r");
+    fp      = fopen(filepath, "r");
+    offset  = 0;
 
-#if 0
-    size_t read_bytes = 0;
-    while ((read_bytes = fread(buffer, 1, sizeof(buffer), fp)) > 0)
-        send(sockfd, buffer, read_bytes, 0);
-#else
-    off_t offset = 0;
-    printf("\e[?25l"); // hide the cursor
+    printf(DISABLE_CURSOR);
+    
     while (offset < sb.st_size) {
 
 #if __APPLE__
@@ -206,9 +133,10 @@ void send_file(const char* destination, char* filepath, int port) {
         printf("\rprogress: %4.1f%%\r",  
                 (float) offset * 100.0 / sb.st_size);
     }
-    printf("\e[?25h"); // enable the cursor
+
+    printf(ENABLE_CURSOR);
     printf("\ndone\n");
-#endif
+
     fclose(fp);
 }
 
@@ -229,23 +157,30 @@ int handle_request(Socket client) {
 
     FILE* fp = NULL;
     size_t nread = 0;
+    char *str, *endptr;
+    long filesize;
 
     memset(buf, 0, sizeof(buf));
     while ((nread = recv(client.fd, buf, sizeof(buf), 0)) > 0) {
-        char* str = strdup(buf);
-        char* endptr = NULL;
-        long filesize = strtol(str, &endptr, 10);
+        // extract file size and file name
+        str = strdup(buf);
+        endptr = NULL;
+        filesize = strtol(str, &endptr, 10);
         endptr++;
+
+        // remove the last newline
         endptr[strlen(endptr) - 1] = '\0';
 
         printf("receiving %s (%ld bytes) from %s\n", endptr, filesize, inet_ntoa(client.addr.sin_addr));
 
+        // open and allocate disk space for incoming file
         fp = fopen(endptr, "w+");
         if (fallocate(fileno(fp), 0, 0, filesize) < 0) {
             perror("failed to allocate space for file");
             break;
         }
-        // send ACK
+
+        // send ACK: ready to start receiving byte stream
         memset(buf, 0, sizeof(buf));
         buf[0] = 1;
         send(client.fd, buf, 1, 0);
@@ -253,32 +188,38 @@ int handle_request(Socket client) {
         struct timeval curr, last, start;
         gettimeofday(&last, NULL);
         start = last;
-        size_t total_received = 0;
-        double cummulative_speed = 0;
-        size_t samples = 0;
 
-        printf("\e[?25l"); // hide the cursor
+        size_t total_received = 0;
+        size_t samples = 0;
+        double cummulative_speed = 0;
+
+        printf(DISABLE_CURSOR);
+
         while ((nread = recv(client.fd, buf, sizeof(buf), 0)) > 0) {
-            gettimeofday(&curr, NULL);
+            // TODO: replace with faster function if available
+            gettimeofday(&curr, NULL); 
             cummulative_speed += (nread * 1000000 / (curr.tv_usec - last.tv_usec)) / 1e6;
             samples++;
+
+            total_received += fwrite(buf, 1, nread, fp);
+
             printf("\rspeed: %10.1lf MBPS completion: %4.1f%%\r", 
                 cummulative_speed / samples, 
                 (float) total_received * 100.0 / filesize);
 
-            total_received += fwrite(buf, 1, nread, fp);
-            
             last = curr;
         }
-        printf("\rspeed: %10.1lf MBPS completion: %4.1f%%\r", 
-                cummulative_speed / samples, 
-                (float) total_received * 100.0 / filesize);
-        // re-enable the cursor
-        printf("\e[?25h");    
+
+        printf(ENABLE_CURSOR);    
 
         gettimeofday(&curr, NULL);
-        printf("\ndone in %lds\n", curr.tv_sec - start.tv_sec);
+        if (curr.tv_sec == start.tv_sec) {
+            printf("\ndone in %lfs\n", ((double)curr.tv_usec - start.tv_usec) / 1e6);
+        } else {
+            printf("\ndone in %lds\n", curr.tv_sec - start.tv_sec);
+        }
 
+        free(str);
         fclose(fp);
         fp = NULL;
     }
