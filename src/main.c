@@ -38,8 +38,8 @@ struct arguments {
 
 // Order of fields: {NAME, KEY, ARG, FLAGS, DOC}
 static struct argp_option options[] = {
-    {"verbose", 'v', 0, 0, "Enable verbose output"},
-    {"port", 'p', 0, 0, "Set communication port"},
+    {"verbose", 'v', 0, OPTION_ARG_OPTIONAL, "Enable verbose output"},
+    {"port", 'p', "PORTNO", OPTION_ARG_OPTIONAL, "Set socket port"},
     {0}    
 };
 
@@ -50,6 +50,16 @@ static error_t parse_opt(int key, char* arg, struct argp_state* state) {
         case 'v':
             arguments->verbose = 1;
             break;
+        case 'p': {
+            if (arg[0] == '=') arg++;
+            
+            arguments->port = strtol(arg, NULL, 10);
+            if (arguments->port <= 0) {
+                fprintf(stderr, "[WARN] falling back to default port (%d)\n", DEFAULT_PORT);
+                arguments->port = DEFAULT_PORT;
+            }
+            break;
+        }
         case ARGP_KEY_ARG: {
             // first argument must be recv or send
             if (state->arg_num == 0 && ! (strcmp(arg, "recv") == 0 || strcmp(arg, "send") == 0))
