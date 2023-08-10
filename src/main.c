@@ -23,12 +23,22 @@
     #include <sys/sendfile.h>
 #endif
 
+#include "util.h"
 #include "server.h"
+#include "netutil.h"
 #include "argsettings.h"
 #include "constants.h"
+#include "protocol.h"
+#include "payloads.h"
 
 #define DISABLE_CURSOR "\e[?25l"
 #define ENABLE_CURSOR  "\e[?25h"
+
+#define SEND_PACKET_OR_DIE(sockfd, packet) \
+if (send_packet(sockfd, packet) < 0) { \
+    perror("send() failed"); \
+    exit(EXIT_FAILURE); \
+} \
 
 int handle_request(Socket client);
 void send_file(const char* destination, char* filepath, int port);
@@ -57,9 +67,12 @@ int main(int argc, char *argv[])
         receive_file(arguments.port);
     else 
         send_file(arguments.args[1], arguments.args[2], arguments.port);
+
+    return EXIT_SUCCESS;
 }
 
 void send_file(const char* destination, char* filepath, int port) {
+    char buf[BUFFER_SIZE];
     struct sockaddr_in servaddr;
     socklen_t addrlen;
     struct stat sb;
@@ -94,30 +107,34 @@ void send_file(const char* destination, char* filepath, int port) {
     if (connect(sockfd, (struct sockaddr*) &servaddr, addrlen) < 0) {
         perror("connect() failed");
         exit(EXIT_FAILURE);
-    }    
+    }
 
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, sizeof(buffer));
+    SEND_PACKET_OR_DIE(
+        sockfd, 
+        build_file_share_request_packet(sb.st_size, basename(filepath))
+    )
 
-    sprintf(buffer, "%ld %s\n", sb.st_size, basename(filepath));
-    
-    if (send(sockfd, buffer, strlen(buffer), 0) < 0) {
-        perror("send() failed");
+    Packet response_packet;
+    memset(&response_packet, 0, sizeof(response_packet));
+
+    // wait for response from receiver
+    if (recv_packet(sockfd, (uint8_t*) buf, BUFFER_SIZE, NULL, &response_packet)) {
+        fprintf(stderr, "file couldn't be sent\n");
         exit(EXIT_FAILURE);
     }
 
-    if (recv(sockfd, buffer, sizeof(buffer), 0) <= 0) {
-        perror("receiver rejected");
+    if (response_packet.type == RESPONSE_BAD) {
+        fprintf(stderr, "Receiver rejected your request.\n");
         exit(EXIT_FAILURE);
     }
 
-    if (buffer[0] != 1) {
-        fprintf(stderr, "receiver rejected\n");
+    if (response_packet.type != RESPONSE_OK) {
+        fprintf(stderr, "Got an invalid response from the receiver.\n");
         exit(EXIT_FAILURE);
     }
 
-    fp      = fopen(filepath, "r");
-    offset  = 0;
+    fp = fopen(filepath, "r");
+    offset = 0;
 
     printf(DISABLE_CURSOR);
     
@@ -136,7 +153,7 @@ void send_file(const char* destination, char* filepath, int port) {
         #error "Your platform is not supported"
     #endif
 #elif defined(__linux__) || defined(__unix__) || defined(_POSIX_VERSION)
-    if (sendfile64(sockfd, fileno(fp), &offset, BUFFER_SIZE) < 0) {
+    if (sendfile(sockfd, fileno(fp), &offset, BUFFER_SIZE) < 0) {
         perror("sendfile() failed");
         fclose(fp);
         exit(2);
@@ -168,88 +185,83 @@ void receive_file(int port) {
 
 int handle_request(Socket client) {
     char buf[BUFFER_SIZE] = {0};
-
     FILE* fp = NULL;
+    
     size_t nread = 0;
-    char *str, *endptr;
-    long filesize;
+    size_t samples = 0;
+    size_t total_received = 0;
+    double cummulative_speed = 0;
 
-    memset(buf, 0, sizeof(buf));
-    while ((nread = recv(client.fd, buf, sizeof(buf), 0)) > 0) {
-        // extract file size and file name
-        str = strdup(buf);
-        endptr = NULL;
-        filesize = strtol(str, &endptr, 10);
-        endptr++;
+    struct timeval curr, last, start;
 
-        // remove the last newline
-        endptr[strlen(endptr) - 1] = '\0';
-        printf("main.c:172\n");
+    Packet pkt;
+    memset(&pkt, 0, sizeof(pkt));
 
-        // ask user if the user wants to accept this file
-        printf("%s is sending %s [%ld bytes], accept? (Y/n) ", inet_ntoa(client.addr.sin_addr), endptr, filesize);
-        char *yes_no = fgets(buf, 10, stdin);
-        if (strcmp("n\n", yes_no) == 0 || strcmp("N\n", yes_no) == 0) {
-            free(str);
-            buf[0] = 0;
-            send(client.fd, buf, 1, 0);
-            printf(ENABLE_CURSOR);
-            return 1;
-        }
-
-        printf("Receiving %s [%ld bytes] from %s\n", endptr, filesize, inet_ntoa(client.addr.sin_addr));
-
-        // open and allocate disk space for incoming file
-        fp = fopen(endptr, "w+");
-        if (fallocate(fileno(fp), 0, 0, filesize) < 0) {
-            perror("failed to allocate space for file");
-            printf(ENABLE_CURSOR);
-            fclose(fp);
-            return 1;
-        }
-
-        // send ACK: ready to start receiving byte stream
-        buf[0] = 1;
-        send(client.fd, buf, 1, 0);
-
-        struct timeval curr, last, start;
-        gettimeofday(&last, NULL);
-        start = last;
-
-        size_t total_received = 0;
-        size_t samples = 0;
-        double cummulative_speed = 0;
-
-        printf(DISABLE_CURSOR);
-
-        while ((nread = recv(client.fd, buf, sizeof(buf), 0)) > 0) {
-            // TODO: replace with faster function if available
-            gettimeofday(&curr, NULL); 
-            cummulative_speed += (nread * 1000000 / (curr.tv_usec - last.tv_usec)) / 1e6;
-            samples++;
-
-            total_received += fwrite(buf, 1, nread, fp);
-
-            printf("\rspeed: %10.1lf MBPS completion: %4.1f%%\r", 
-                cummulative_speed / samples, 
-                (float) total_received * 100.0 / filesize);
-
-            last = curr;
-        }
-
-        printf(ENABLE_CURSOR);    
-
-        gettimeofday(&curr, NULL);
-        if (curr.tv_sec == start.tv_sec) {
-            printf("\ndone in %lfs\n", ((double)curr.tv_usec - start.tv_usec) / 1e6);
-        } else {
-            printf("\ndone in %lds\n", curr.tv_sec - start.tv_sec);
-        }
-
-        free(str);
-        fclose(fp);
-        fp = NULL;
+    if (recv_packet(client.fd, (uint8_t*) buf, BUFFER_SIZE, NULL, &pkt) < 0) {
+        perror("Couldn't receive packet");
+        exit(EXIT_FAILURE);
     }
+
+    if (pkt.type != REQUEST_SEND_FILE) {
+        SEND_PACKET_OR_DIE(client.fd, bad_response());
+        return -1;
+    }
+
+    FileRequestPayload payload = *(FileRequestPayload*) pkt.body;
+
+    // ask user if the user wants to accept this file
+    printf("%s is sending %s [%ld bytes], accept? (Y/n) ", 
+        inet_ntoa(client.addr.sin_addr), payload.filename, payload.filesize);
+
+    char *yes_no = fgets(buf, 3, stdin);
+    if (strcmp("n\n", yes_no) == 0 || strcmp("N\n", yes_no) == 0) {
+        SEND_PACKET_OR_DIE(client.fd, bad_response());
+        return 1;
+    }
+
+    printf("Receiving %s [%ld bytes] from %s\n", 
+        payload.filename, payload.filesize, inet_ntoa(client.addr.sin_addr));
+
+    // open and allocate disk space for incoming file
+    fp = fopen(payload.filename, "w+");
+    if (fallocate(fileno(fp), 0, 0, payload.filesize) < 0) {
+        perror("failed to allocate space for file");
+        fclose(fp);
+        return 1;
+    }
+
+    // ready to start receiving byte stream
+    SEND_PACKET_OR_DIE(client.fd, ok_response());
+
+    gettimeofday(&start, NULL);
+    last = start;
+
+    printf(DISABLE_CURSOR);
+
+    while ((nread = recv(client.fd, buf, sizeof(buf), 0)) > 0) {
+        gettimeofday(&curr, NULL); 
+        cummulative_speed += (nread * 1000000 / (curr.tv_usec - last.tv_usec)) / 1e6;
+        samples++;
+
+        total_received += fwrite(buf, 1, nread, fp);
+
+        printf("\rspeed: %10.1lf MBPS completion: %4.1f%%\r", 
+            cummulative_speed / samples, 
+            (float) total_received * 100.0 / payload.filesize);
+
+        last = curr;
+    }
+
+    printf(ENABLE_CURSOR);    
+
+    gettimeofday(&curr, NULL);
+    if (curr.tv_sec == start.tv_sec) {
+        printf("\ndone in %lfs\n", ((double)curr.tv_usec - start.tv_usec) / 1e6);
+    } else {
+        printf("\ndone in %lds\n", curr.tv_sec - start.tv_sec);
+    }
+
+    fclose(fp);
 
     return 1;
 }

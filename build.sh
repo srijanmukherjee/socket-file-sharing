@@ -30,4 +30,4 @@ if [ ! -d "$SRC_DIR" ]; then
     exit 1
 fi
 
-(set -xe; $CC $CFLAGS "$SRC_DIR/server.c" "$SRC_DIR/main.c" -o "$OUT_DIR/$NAME")
+(set -xe; $CC $CFLAGS "$SRC_DIR/util.c" "$SRC_DIR/netutil.c" "$SRC_DIR/protocol.c" "$SRC_DIR/server.c" "$SRC_DIR/main.c" -o "$OUT_DIR/$NAME")
